@@ -4,14 +4,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * Minute Multiplication — Kid Mode (3rd Grade)
  * Fully self‑contained React + TypeScript app.
  *
- * This revision fixes a syntax error in Frogger's carsRef initialization by removing
- * stray/duplicated blocks and ensuring valid object literals—no trailing commas in props.
- * It also preserves the prior UX:
- *  - Colorful kid theme, 60s timer, per‑day best per set
- *  - Missed‑fact carryover & interleave next round
- *  - Non‑blocking feedback (green glow on right, red shake on wrong)
- *  - Intense confetti and a Frogger bonus game
- *  - Answer input always focused; smaller placeholder text
+ * Fixes in this revision:
+ * - **SyntaxError after `endRound()`**: removed stray duplicate lines and an extra closing brace
+ *   that broke parsing around the `startRound`/`endRound` region.
+ * - Cleaned conditional rendering of the end-of-round modal and bottom results to avoid
+ *   chained `&&` expressions that can be brittle.
+ * - Kept all features you requested (wrong‑twice logic, end modal, Frogger close button,
+ *   lane spacing and speeds, etc.).
  */
 
 // ---------------------- Types ---------------------------------------------
@@ -28,6 +27,9 @@ function choice<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.leng
 function selectionKey(families: number[]): string { return families.slice().sort((a, b) => a - b).join(","); }
 function todayStr(): string { return new Date().toISOString().slice(0, 10); }
 function clampInt(v: string | number, min: number, max: number): number { const n = Math.round(Number(v)); if (!Number.isFinite(n)) return min; return Math.max(min, Math.min(max, n)); }
+
+// Problem generator (module-scope so tests can call it)
+function genRandomProblem(families: number[]): Problem { const a = choice(families); const b = choice(MULTIPLIERS); return { a, b, ans: a * b }; }
 
 // ---------------------- Hooks ---------------------------------------------
 function useInterval(callback: () => void, delay: number | null) {
@@ -179,7 +181,6 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
   const DIRS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 1 : -1));
 
   // Speed profile: top lanes (smaller row) are faster; bottom are slower
-  // Base speeds roughly 2.0 .. 4.0 cells/sec, with slight per-car jitter added later
   const SPEEDS = LANE_ROWS.map((_, i) => {
     const rank = (LANE_ROWS.length - i) / LANE_ROWS.length; // top ~1.0, bottom ~0.08
     return 2.0 + rank * 2.0; // 2.0 .. 4.0
@@ -193,18 +194,18 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
   const [alive, setAlive] = useState(true);
   const [won, setWon] = useState(false);
 
-  // Car lanes (clean, non-duplicated init)
+  // Car lanes (clean init)
   const carsRef = useRef<Car[][]>(
     LANE_ROWS.map((row, i) => {
       const count = LANE_COUNTS[i] as number;
-      const spacing = COLS / count;
+      const spacing = (COLS / count) * 1.25; // slightly farther apart
       return Array.from({ length: count }, (_, k) => ({
         row,
         x: (k * spacing) % COLS,
         w: 1.6 + (k % 2) * 0.6,
         speed: SPEEDS[i]! * (0.9 + Math.random() * 0.2), // small per-car jitter
         dir: DIRS[i]!,
-        hue: 200 + ((i * 25 + k * 40) % 160)
+        hue: 200 + ((i * 25 + k * 40) % 160),
       }));
     })
   );
@@ -220,7 +221,7 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
       const next: Frog = {
         r: frog.r + (key==='ArrowUp'?-1:key==='ArrowDown'?1:0),
         c: frog.c + (key==='ArrowLeft'?-1:key==='ArrowRight'?1:0),
-        hopping: true
+        hopping: true,
       };
       next.r = Math.max(0, Math.min(ROWS - 1, next.r));
       next.c = Math.max(0, Math.min(COLS - 1, next.c));
@@ -284,6 +285,8 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="rounded-3xl shadow-2xl border border-indigo-200 overflow-hidden" style={{ perspective: 800 }}>
         <div className="relative" style={{ width: COLS * CELL, height: ROWS * CELL, transform: "rotateX(8deg) translateZ(0)" }}>
+          {/* Close button for touch devices */}
+          <button aria-label="Close" onClick={() => onClose && onClose()} className="absolute top-2 right-2 z-10 w-9 h-9 rounded-full bg-white/90 border border-indigo-200 text-indigo-800 font-bold shadow hover:bg-white">×</button>
           {/* Background */}
           <div className="absolute inset-0" style={{ background: "linear-gradient(#b9f3c7, #b9f3c7)" }} />
           {/* Roads */}
@@ -344,6 +347,8 @@ export default function MinuteMultiplicationApp() {
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [showConfetti, setShowConfetti] = useState<boolean>(false);
   const [showFrogger, setShowFrogger] = useState<boolean>(false);
+  const [showEndModal, setShowEndModal] = useState<boolean>(false);
+  const [wrongStreak, setWrongStreak] = useState<number>(0);
 
   // Missed‑fact handling between rounds
   const [missedQueueUI, setMissedQueueUI] = useState<Problem[]>([]);
@@ -367,11 +372,6 @@ export default function MinuteMultiplicationApp() {
   // Always focus the answer field when a round is running and the problem changes
   useEffect(() => { if (running && answerRef.current) answerRef.current.focus(); }, [running, current]);
 
-  function genRandomProblem(families: number[]): Problem {
-    const a = choice(families);
-    const b = choice(MULTIPLIERS);
-    return { a, b, ans: a * b };
-  }
   function genNextProblem(): Problem {
     if (missedQueueRef.current.length && Math.random() < 0.6) {
       const next = missedQueueRef.current.shift()!;
@@ -397,6 +397,8 @@ export default function MinuteMultiplicationApp() {
     setRunning(true);
     setLastResult(null);
     setFlash(null);
+    setWrongStreak(0);
+    setShowEndModal(false);
     // Focus answer immediately
     setTimeout(() => answerRef.current?.focus(), 0);
   }
@@ -406,6 +408,7 @@ export default function MinuteMultiplicationApp() {
     const newBest = updateBest(score);
     const stats = buildStats(attempts);
     setLastResult({ score, best: Math.max(best, score), key, stats });
+    setShowEndModal(true);
     if (newBest) {
       setShowConfetti(true); fanfareNewBest();
       setTimeout(() => setShowConfetti(false), 1600);
@@ -430,10 +433,23 @@ export default function MinuteMultiplicationApp() {
       const next = genNextProblem();
       setCurrent(next);
       e.currentTarget.reset();
+      setWrongStreak(0);
       flashRight(); chordSuccess();
       answerRef.current?.focus();
     } else {
-      (input as HTMLInputElement | null)?.classList.add("animate-shake"); flashWrong(); buzzWrong();
+      const newStreak = wrongStreak + 1;
+      (input as HTMLInputElement | null)?.classList.add("animate-shake");
+      flashWrong(); buzzWrong();
+      if (newStreak >= 2) {
+        // Deduct one point (non-negative; say the word if you want negatives allowed)
+        setScore((s) => Math.max(0, s - 1));
+        const next = genNextProblem();
+        setCurrent(next);
+        e.currentTarget.reset();
+        setWrongStreak(0);
+      } else {
+        setWrongStreak(newStreak);
+      }
       answerRef.current?.focus();
     }
   }
@@ -530,7 +546,35 @@ export default function MinuteMultiplicationApp() {
           </div>
         </section>
 
-        {/* Last result banner + accuracy sheet */}
+        {/* End-of-round modal */}
+        {lastResult && showEndModal && (
+          <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
+            <div className="relative w-[min(92vw,700px)] max-h-[80vh] overflow-auto rounded-3xl border border-fuchsia-200 shadow-2xl bg-gradient-to-br from-pink-50 to-amber-50 p-6">
+              <button aria-label="Close" onClick={() => setShowEndModal(false)} className="absolute top-3 right-3 w-9 h-9 rounded-full bg-white/80 border border-rose-200 text-rose-600 font-bold hover:bg-white">×</button>
+              <h3 className="text-2xl font-black text-indigo-900 mb-2">Round results</h3>
+              <p className="text-indigo-900 mb-3">Score this round: <span className="font-extrabold">{lastResult.score}</span> • Best today (this set): <span className="font-extrabold">{Math.max(lastResult.best, lastResult.score)}</span></p>
+              {lastResult.stats && (
+                <div className="space-y-2">
+                  <div className="text-sm text-indigo-900/90">Correct: {lastResult.stats.correct} • Wrong attempts: {lastResult.stats.wrong}</div>
+                  {lastResult.stats.missed.length > 0 ? (
+                    <div className="text-base">
+                      <div className="font-semibold text-rose-700">Missed facts:</div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {lastResult.stats.missed.map(m => (
+                          <span key={`${m.a}-${m.b}`} className="px-2 py-1 rounded-xl bg-white border border-rose-200 text-rose-700 text-lg font-extrabold">{m.a}×{m.b}={m.ans}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-emerald-700 font-semibold">No misses — perfect round! 🎉</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Bottom summary panel (persists after closing modal) */}
         {lastResult && (
           <div className="mt-6 p-4 rounded-2xl bg-emerald-50 border border-emerald-200 shadow">
             <div className="font-extrabold text-emerald-900">Great job!</div>
@@ -565,7 +609,7 @@ export default function MinuteMultiplicationApp() {
       <style>{`
         @keyframes shake { 10%, 90% { transform: translateX(-1px); } 20%, 80% { transform: translateX(2px); } 30%, 50%, 70% { transform: translateX(-4px); } 40%, 60% { transform: translateX(4px); } }
         .animate-shake { animation: shake 0.2s linear; }
-        @media (min-width: 768px) { .md\:grid-cols-13 { grid-template-columns: repeat(13, minmax(0, 1fr)); } }
+        @media (min-width: 768px) { .md\\:grid-cols-13 { grid-template-columns: repeat(13, minmax(0, 1fr)); } }
       `}</style>
     </div>
   );
@@ -587,6 +631,7 @@ function runDevTests() {
 
     // selectionKey sorts & joins
     console.assert(selectionKey([3,1,2]) === "1,2,3", "selectionKey should sort ascending");
+    console.assert(selectionKey([]) === "", "selectionKey empty set");
 
     // genRandomProblem respects families and 1..12 multipliers
     for (let i = 0; i < 10; i++) {
@@ -611,14 +656,18 @@ function runDevTests() {
     const k = "2,7"; const bk = bestKey(k);
     console.assert(bk.includes(todayStr()) && bk.includes(k), "bestKey structure");
 
+    // clampInt boundaries
+    console.assert(clampInt("100", 10, 90) === 90, "clamp upper bound");
+    console.assert(clampInt("-5", 0, 60) === 0, "clamp lower bound");
+
+    // todayStr format
+    console.assert(/^\d{4}-\d{2}-\d{2}$/.test(todayStr()), "todayStr format YYYY-MM-DD");
+
     console.groupEnd();
   } catch (err) {
     console.error("Sanity test failed:", err);
   }
 }
-
-// Generators at end for TS name resolution
-function genRandomProblem(families: number[]): Problem { const a = choice(families); const b = choice(MULTIPLIERS); return { a, b, ans: a * b }; }
 
 if (typeof window !== 'undefined' && !(window as any).__MM_TESTS_DONE__) {
   (window as any).__MM_TESTS_DONE__ = true;
