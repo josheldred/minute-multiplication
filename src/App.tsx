@@ -5,12 +5,12 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * Fully self‑contained React + TypeScript app.
  *
  * Fixes in this revision:
- * - **SyntaxError after `endRound()`**: removed stray duplicate lines and an extra closing brace
- *   that broke parsing around the `startRound`/`endRound` region.
- * - Cleaned conditional rendering of the end-of-round modal and bottom results to avoid
- *   chained `&&` expressions that can be brittle.
- * - Kept all features you requested (wrong‑twice logic, end modal, Frogger close button,
- *   lane spacing and speeds, etc.).
+ * - Hides answers in the bottom summary panel (prevents peeking during play).
+ * - Fixes mismatched parenthesis in Frogger `carsRef` initialization (build error).
+ * - Cars in Frogger spawn off‑screen at lane ends; wider spacing for easier play.
+ * - Keeps all prior features: wrong‑twice skip/−1, end modal, confetti, sounds,
+ *   Frogger with close button, varied lane speeds, input focus, smaller placeholder,
+ *   and best‑score per day/set.
  */
 
 // ---------------------- Types ---------------------------------------------
@@ -171,52 +171,48 @@ function useBestForKey(k: string): [number, (score: number) => boolean] {
 
 // ---------------------- Frogger 2.5D (spaced cars, variable speeds) -------
 function FroggerGame({ onClose }: { onClose?: () => void }) {
-  // Make board taller to support ~double the traffic lanes
   const COLS = 17;
-  const ROWS = 16; // goal at 0, twelve traffic lanes 2..13, start grass at 15
+  const ROWS = 16;
   const CELL = 40;
-
-  // Build 12 traffic lanes from row 2 to row 13 (top lanes should be faster)
-  const LANE_ROWS = Array.from({ length: 12 }, (_, i) => i + 2); // [2..13]
+  const LANE_ROWS = Array.from({ length: 12 }, (_, i) => i + 2);
   const DIRS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 1 : -1));
-
-  // Speed profile: top lanes (smaller row) are faster; bottom are slower
-  const SPEEDS = LANE_ROWS.map((_, i) => {
-    const rank = (LANE_ROWS.length - i) / LANE_ROWS.length; // top ~1.0, bottom ~0.08
-    return 2.0 + rank * 2.0; // 2.0 .. 4.0
-  });
-
-  // Slightly denser traffic overall by alternating 3 and 4 cars per lane
+  const SPEEDS = LANE_ROWS.map((_, i) => { const rank = (LANE_ROWS.length - i) / LANE_ROWS.length; return 2.0 + rank * 2.0; });
   const LANE_COUNTS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 4 : 3));
+  // Wider spacing to make Frogger easier
+  const LANE_SPACING = LANE_ROWS.map((_, i) => (COLS / (LANE_COUNTS[i] as number)) * 1.9);
 
   const [frog, setFrog] = useState<Frog>({ r: ROWS - 1, c: Math.floor(COLS / 2), hopping: false });
   const targetRef = useRef<Frog>({ r: ROWS - 1, c: Math.floor(COLS / 2), hopping: false });
   const [alive, setAlive] = useState(true);
   const [won, setWon] = useState(false);
+  const [, setFrame] = useState(0);
 
-  // Car lanes (clean init)
+  // Clean, balanced init — cars start off-screen at lane ends
   const carsRef = useRef<Car[][]>(
     LANE_ROWS.map((row, i) => {
       const count = LANE_COUNTS[i] as number;
-      const spacing = (COLS / count) * 1.25; // slightly farther apart
-      return Array.from({ length: count }, (_, k) => ({
-        row,
-        x: (k * spacing) % COLS,
-        w: 1.6 + (k % 2) * 0.6,
-        speed: SPEEDS[i]! * (0.9 + Math.random() * 0.2), // small per-car jitter
-        dir: DIRS[i]!,
-        hue: 200 + ((i * 25 + k * 40) % 160),
-      }));
+      const dir = DIRS[i]!;
+      const spacing = LANE_SPACING[i]!;
+      return Array.from({ length: count }, (_, k) => {
+        const offset = k * spacing + Math.random() * spacing * 0.5;
+        const startX = dir === 1 ? -(offset + 1.5) : COLS + offset + 1.5; // off-screen
+        return ({
+          row,
+          x: startX,
+          w: 1.6 + (k % 2) * 0.6,
+          speed: SPEEDS[i]! * (0.9 + Math.random() * 0.2),
+          dir,
+          hue: 200 + ((i * 25 + k * 40) % 160),
+        });
+      });
     })
   );
-
-  const [, setFrame] = useState(0);
 
   // Arrow key controls
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const { key } = e;
-      if (!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(key)) return;
+      if (!["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(key)) return;
       e.preventDefault();
       const next: Frog = {
         r: frog.r + (key==='ArrowUp'?-1:key==='ArrowDown'?1:0),
@@ -235,10 +231,19 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
   const hopProg = useRef(0);
   useRaf((dt) => {
     if (!alive || won) return;
-    // Move cars every frame
+    // Move cars; wrap off-screen with randomized gaps
     carsRef.current.forEach((lane) => {
-      lane.forEach((car) => { car.x = (car.x + car.dir * car.speed * dt + COLS) % COLS; });
+      lane.forEach((car) => {
+        car.x += car.dir * car.speed * dt;
+        const spacing = LANE_SPACING[LANE_ROWS.indexOf(car.row)]!;
+        if (car.dir === 1 && car.x > COLS + car.w + 1) {
+          car.x = -car.w - (Math.random() * spacing);
+        } else if (car.dir === -1 && car.x < -car.w - 1) {
+          car.x = COLS + (Math.random() * spacing);
+        }
+      });
     });
+
     // Frog hop animation
     if (frog.hopping) {
       hopProg.current += dt * 6;
@@ -249,7 +254,6 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
         setFrog((f) => ({ ...f }));
       }
     }
-    // force re-render
     setFrame((n) => (n + 1) % 1000000);
 
     // Collision + win
@@ -259,9 +263,10 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
     if (inLaneIdx >= 0) {
       const cars = carsRef.current[inLaneIdx]!;
       const hit = cars.some((car) => {
-        const cx = wrap(car.x, COLS);
-        const fx = wrap(fc, COLS);
-        return fx >= cx && fx <= cx + car.w;
+        const cx = car.x;
+        const fx = fc;
+        // Only collide when car is on-screen
+        return cx <= fx && fx <= cx + car.w && cx >= -car.w && cx <= COLS + car.w;
       });
       if (hit) setAlive(false);
     }
@@ -270,8 +275,6 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
 
   useEffect(() => { if (!alive || won) setTimeout(() => onClose && onClose(), 1200); }, [alive, won, onClose]);
 
-  // Helpers
-  function wrap(x: number, m: number) { return ((x % m) + m) % m; }
   function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
   function easeOut(t: number) { return 1 - Math.pow(1 - t, 2); }
 
@@ -304,7 +307,7 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
 
           {/* Cars */}
           {carsRef.current.flat().map((car, idx) => (
-            <div key={idx} className="absolute will-change-transform" style={{ top: car.row * CELL + 2, transform: `translateX(${wrap(car.x, COLS) * CELL}px)`, transition: "transform 0.05s linear" }}>
+            <div key={idx} className="absolute will-change-transform" style={{ top: car.row * CELL + 2, transform: `translateX(${car.x * CELL}px)`, transition: "transform 0.05s linear" }}>
               <div className="relative" style={{ width: car.w * CELL, height: CELL - 4 }}>
                 <div className="absolute inset-0 rounded-xl shadow-md" style={{ background: `linear-gradient(180deg,hsl(${car.hue} 80% 65%), hsl(${car.hue} 80% 40%))` }} />
                 <div className="absolute left-1 right-1 top-1 h-1.5 rounded bg-white/70" />
@@ -350,7 +353,6 @@ export default function MinuteMultiplicationApp() {
   const [showEndModal, setShowEndModal] = useState<boolean>(false);
   const [wrongStreak, setWrongStreak] = useState<number>(0);
 
-  // Missed‑fact handling between rounds
   const [missedQueueUI, setMissedQueueUI] = useState<Problem[]>([]);
   const missedQueueRef = useRef<Problem[]>([]);
   const setMissedQueue = (arr: Problem[]) => { missedQueueRef.current = Array.isArray(arr) ? arr.slice() : []; setMissedQueueUI(missedQueueRef.current.slice()); };
@@ -358,7 +360,6 @@ export default function MinuteMultiplicationApp() {
   const key = useMemo(() => selectionKey(selected), [selected]);
   const [best, updateBest] = useBestForKey(key);
 
-  // Refs for focus control
   const answerRef = useRef<HTMLInputElement | null>(null);
 
   useInterval(() => {
@@ -369,7 +370,6 @@ export default function MinuteMultiplicationApp() {
     });
   }, running ? 1000 : null);
 
-  // Always focus the answer field when a round is running and the problem changes
   useEffect(() => { if (running && answerRef.current) answerRef.current.focus(); }, [running, current]);
 
   function genNextProblem(): Problem {
@@ -399,7 +399,6 @@ export default function MinuteMultiplicationApp() {
     setFlash(null);
     setWrongStreak(0);
     setShowEndModal(false);
-    // Focus answer immediately
     setTimeout(() => answerRef.current?.focus(), 0);
   }
 
@@ -441,7 +440,6 @@ export default function MinuteMultiplicationApp() {
       (input as HTMLInputElement | null)?.classList.add("animate-shake");
       flashWrong(); buzzWrong();
       if (newStreak >= 2) {
-        // Deduct one point (non-negative; say the word if you want negatives allowed)
         setScore((s) => Math.max(0, s - 1));
         const next = genNextProblem();
         setCurrent(next);
@@ -587,7 +585,7 @@ export default function MinuteMultiplicationApp() {
                   <div className="text-sm text-rose-700">
                     Missed facts to review (auto‑included next round):
                     {lastResult.stats.missed.map(m => (
-                      <span key={`${m.a}-${m.b}`} className="mx-1 text-lg font-extrabold text-rose-700"> {m.a}×{m.b}={m.ans} </span>
+                      <span key={`${m.a}-${m.b}`} className="mx-1 text-lg font-extrabold text-rose-700"> {m.a}×{m.b} </span>
                     ))}
                   </div>
                 ) : (
