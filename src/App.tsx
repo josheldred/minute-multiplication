@@ -34,195 +34,15 @@ function genRandomProblem(families: number[]): Problem { const a = choice(famili
 // ---------------------- Hooks ---------------------------------------------
 function useInterval(callback: () => void, delay: number | null) {
   const savedRef = useRef(callback);
-  useEffect(() => { savedRef.current = callback; }, [callback]);
-  useEffect(() => {
-    if (delay == null) return;
-    const id = setInterval(() => savedRef.current(), delay);
-    return () => clearInterval(id);
-  }, [delay]);
-}
-
-function useRaf(callback: (dt: number) => void, active: boolean) {
-  const cbRef = useRef(callback);
-  const frameRef = useRef<number | null>(null);
-  useEffect(() => { cbRef.current = callback; }, [callback]);
-  useEffect(() => {
-    if (!active) return;
-    let prev = performance.now();
-    const loop = (now: number) => {
-      const dt = (now - prev) / 1000; // seconds
-      prev = now;
-      cbRef.current?.(dt);
-      frameRef.current = requestAnimationFrame(loop);
-    };
-    frameRef.current = requestAnimationFrame(loop);
-    return () => { if (frameRef.current != null) cancelAnimationFrame(frameRef.current); };
-  }, [active]);
-}
-
-// ---------------------- Tiny Sound Synth ----------------------------------
-let _audioCtx: AudioContext | undefined;
-function getCtx(): AudioContext {
-  if (!_audioCtx) {
-    const AC: any = (window as any).AudioContext || (window as any).webkitAudioContext;
-    _audioCtx = new AC();
-  }
-  return _audioCtx!;
-}
-function beep({ freq = 600, dur = 0.12, type = "sine", gain = 0.05 }: { freq?: number; dur?: number; type?: OscillatorType; gain?: number }) {
-  try {
-    const ctx = getCtx();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = type; o.frequency.value = freq; g.gain.value = gain;
-    o.connect(g); g.connect(ctx.destination);
-    const t = ctx.currentTime; o.start(t); o.stop(t + dur);
-  } catch {}
-}
-function chordSuccess() { beep({ freq: 660, dur: 0.08, type: "triangle" }); setTimeout(() => beep({ freq: 880, dur: 0.08, type: "triangle" }), 90); }
-function buzzWrong() { beep({ freq: 180, dur: 0.12, type: "square", gain: 0.04 }); }
-function fanfareNewBest() { [660, 880, 1320].forEach((f, i) => setTimeout(() => beep({ freq: f, dur: 0.1, type: "sawtooth" }), i * 90)); }
-
-// ---------------------- Confetti (intense) --------------------------------
-function Confetti({ show }: { show: boolean }) {
-  if (!show) return null;
-  const N = 200; // many pieces
-  const palette = ["#f59e0b", "#10b981", "#6366f1", "#ef4444", "#06b6d4", "#f472b6", "#84cc16"];
-  const emoji = ['🎉','✨','⭐️','💥','🎈','🟡','🟣','🟠'];
-  const pieces = Array.from({ length: N }, (_, i) => ({
-    id: i,
-    left: Math.random() * 100,
-    delay: Math.random() * 0.6,
-    dur: 1.4 + Math.random() * 1.2,
-    size: 8 + Math.floor(Math.random() * 16),
-    type: Math.random() < 0.6 ? 'shape' : 'emoji' as const,
-    color: choice(palette),
-    char: choice(emoji),
-  }));
-  return (
-    <div className="pointer-events-none fixed inset-0 overflow-hidden z-50">
-      {pieces.map((p) => (
-        p.type === 'emoji' ? (
-          <span
-            key={p.id}
-            className="absolute animate-confetti"
-            style={{ left: `${p.left}%`, fontSize: `${p.size}px`, animationDuration: `${p.dur}s`, animationDelay: `${p.delay}s` }}
-          >{p.char}</span>
-        ) : (
-          <div
-            key={p.id}
-            className="absolute animate-confetti rounded-md shadow"
-            style={{ left: `${p.left}%`, width: `${p.size}px`, height: `${p.size}px`, background: p.color, animationDuration: `${p.dur}s`, animationDelay: `${p.delay}s` }}
-          />
-        )
-      ))}
-      <div className="absolute inset-0 flex items-center justify-center">
-        <div className="w-16 h-16 rounded-full border-4 border-fuchsia-400/70 animate-ring" />
-      </div>
-      <style>{`
-        @keyframes confettiFall { 0% { transform: translate3d(0, -10vh, 0) rotate(0deg); opacity: 1; } 100% { transform: translate3d(0, 110vh, 0) rotate(720deg); opacity: 0; } }
-        .animate-confetti { animation: confettiFall var(--dur,1.6s) ease-out forwards; }
-        @keyframes ring { 0% { transform: scale(0.2); opacity: 0.9; } 100% { transform: scale(2.2); opacity: 0; } }
-        .animate-ring { animation: ring 0.9s ease-out forwards; }
-      `}</style>
-    </div>
-  );
-}
-
-// ---------------------- UI Elements ---------------------------------------
-function Toggle({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      className={
-        `px-3 py-2 rounded-2xl border text-sm sm:text-base font-bold transition select-none shadow-sm ` +
-        (active
-          ? "bg-gradient-to-br from-emerald-400 to-emerald-600 text-white border-emerald-600 shadow-lg"
-          : "bg-white text-indigo-900 border-indigo-200 hover:border-indigo-400 hover:bg-indigo-50")
-      }
-      aria-pressed={active}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className={"flex flex-col items-center p-3 rounded-2xl bg-white/90 shadow-md border"}>
-      <div className="text-3xl font-black tabular-nums">{value}</div>
-      <div className="text-xs text-gray-600 uppercase tracking-wide">{label}</div>
-    </div>
-  );
-}
-
-// ---------------------- Best score (per‑day per set) ----------------------
-function bestKey(k: string) { return `minuteMult.best.${todayStr()}.${k || "none"}`; }
-function useBestForKey(k: string): [number, (score: number) => boolean] {
-  const [best, setBest] = useState<number>(() => Number(localStorage.getItem(bestKey(k)) || 0));
-  useEffect(() => { setBest(Number(localStorage.getItem(bestKey(k)) || 0)); }, [k]);
-  const update = (score: number) => {
-    const cur = Number(localStorage.getItem(bestKey(k)) || 0);
-    if (score > cur) { localStorage.setItem(bestKey(k), String(score)); setBest(score); return true; }
-    return false;
-  };
-  return [best, update];
-}
-
-// ---------------------- Frogger 2.5D (spaced cars, variable speeds) -------
-function FroggerGame({ onClose }: { onClose?: () => void }) {
-  const COLS = 17;
-  const ROWS = 16;
-  const CELL = 40;
-  const LANE_ROWS = Array.from({ length: 12 }, (_, i) => i + 2);
-  const DIRS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 1 : -1));
-  const SPEEDS = LANE_ROWS.map((_, i) => { const rank = (LANE_ROWS.length - i) / LANE_ROWS.length; return 2.0 + rank * 2.0; });
-  const LANE_COUNTS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 4 : 3));
-  // Wider spacing to make Frogger easier
-  const LANE_SPACING = LANE_ROWS.map((_, i) => (COLS / (LANE_COUNTS[i] as number)) * 1.9);
-
-  const [frog, setFrog] = useState<Frog>({ r: ROWS - 1, c: Math.floor(COLS / 2), hopping: false });
-  const targetRef = useRef<Frog>({ r: ROWS - 1, c: Math.floor(COLS / 2), hopping: false });
-  const [alive, setAlive] = useState(true);
-  const [won, setWon] = useState(false);
-  const [, setFrame] = useState(0);
-
-  // Clean, balanced init — cars start off-screen at lane ends
-  const carsRef = useRef<Car[][]>(
-    LANE_ROWS.map((row, i) => {
-      const count = LANE_COUNTS[i] as number;
-      const dir = DIRS[i]!;
-      const spacing = LANE_SPACING[i]!;
-      return Array.from({ length: count }, (_, k) => {
-        const offset = k * spacing + Math.random() * spacing * 0.5;
-        const startX = dir === 1 ? -(offset + 1.5) : COLS + offset + 1.5; // off-screen
-        return ({
-          row,
-          x: startX,
-          w: 1.6 + (k % 2) * 0.6,
-          speed: SPEEDS[i]! * (0.9 + Math.random() * 0.2),
-          dir,
-          hue: 200 + ((i * 25 + k * 40) % 160),
-        });
-      });
-    })
-  );
-
-  // Arrow key controls
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const { key } = e;
-      if (!["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(key)) return;
+      if (!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(key)) return;
       e.preventDefault();
-      const next: Frog = {
-        r: frog.r + (key==='ArrowUp'?-1:key==='ArrowDown'?1:0),
-        c: frog.c + (key==='ArrowLeft'?-1:key==='ArrowRight'?1:0),
-        hopping: true,
-      };
-      next.r = Math.max(0, Math.min(ROWS - 1, next.r));
-      next.c = Math.max(0, Math.min(COLS - 1, next.c));
-      targetRef.current = next;
-      setFrog((f) => ({ ...f, hopping: true }));
+      if (key === 'ArrowUp') queueHop(-1, 0);
+      else if (key === 'ArrowDown') queueHop(1, 0);
+      else if (key === 'ArrowLeft') queueHop(0, -1);
+      else if (key === 'ArrowRight') queueHop(0, 1);
     };
     window.addEventListener('keydown', onKey as any, { passive: false } as any);
     return () => window.removeEventListener('keydown', onKey as any);
@@ -287,7 +107,26 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="rounded-3xl shadow-2xl border border-indigo-200 overflow-hidden" style={{ perspective: 800 }}>
-        <div className="relative" style={{ width: COLS * CELL, height: ROWS * CELL, transform: "rotateX(8deg) translateZ(0)" }}>
+        <div
+          className="relative"
+          style={{ width: COLS * CELL, height: ROWS * CELL, transform: "rotateX(8deg) translateZ(0)", touchAction: 'none' }}
+          onTouchStart={(e) => { const t = e.changedTouches[0]; touchStartRef.current = { x: t.clientX, y: t.clientY }; }}
+          onTouchMove={(e) => { e.preventDefault(); }}
+          onTouchEnd={(e) => {
+            const start = touchStartRef.current; const t = e.changedTouches[0];
+            if (!start) return;
+            const dx = t.clientX - start.x; const dy = t.clientY - start.y;
+            const ax = Math.abs(dx), ay = Math.abs(dy);
+            const TH = 24; // px threshold
+            if (ax < TH && ay < TH) return;
+            if (ax > ay) {
+              queueHop(0, dx > 0 ? 1 : -1);
+            } else {
+              queueHop(dy > 0 ? 1 : -1, 0);
+            }
+            touchStartRef.current = null;
+          }}
+        >
           {/* Close button for touch devices */}
           <button aria-label="Close" onClick={() => onClose && onClose()} className="absolute top-2 right-2 z-10 w-9 h-9 rounded-full bg-white/90 border border-indigo-200 text-indigo-800 font-bold shadow hover:bg-white">×</button>
           {/* Background */}
