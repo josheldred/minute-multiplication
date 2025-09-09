@@ -2,17 +2,17 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Minute Multiplication — Kid Mode (3rd Grade)
- * Fully self‑contained React + TypeScript app.
+ * Fully self-contained React + TypeScript app in one file.
  *
- * This file restores the missing `useBestForKey` hook and includes all recent
- * gameplay & UX updates:
- * - Selectable fact families **1–12** (×0 removed)
- * - 60s (configurable) timed rounds; input auto‑focus; small placeholder
- * - Wrong twice in a row ⇒ auto‑skip & **−1 point** (non‑negative)
- * - Bottom summary hides answers; end‑of‑round modal shows answers
- * - Per‑day best score per selected set; intense confetti & bonus Frogger
- * - Frogger: wider spacing, off‑screen spawn, constant motion, **swipe on touch**
- * - Seconds input allows free typing; clamps on blur/Enter (10–300)
+ * Features:
+ * - Fact families 1–12 (×0 removed)
+ * - 60s (configurable) timed rounds
+ * - Wrong twice in a row → skip & −1 point
+ * - End-of-round modal lists missed WITH answers; bottom summary lists misses WITHOUT answers
+ * - Per-day best score per fact-set; confetti + Frogger bonus when best is beaten
+ * - Non-blocking feedback (green glow on right, red shake on wrong)
+ * - Answer input auto-focus; seconds field free-typed & clamped on blur/Enter (10–300)
+ * - Frogger: cars spawn only off-screen at ends, constant motion, wider spacing, swipe + arrows
  */
 
 // ---------------------- Types ---------------------------------------------
@@ -33,7 +33,7 @@ function clampInt(v: string | number, min: number, max: number): number { const 
 // Problem generator (module-scope so tests can call it)
 function genRandomProblem(families: number[]): Problem { const a = choice(families); const b = choice(MULTIPLIERS); return { a, b, ans: a * b }; }
 
-// ---------------------- Best score (per‑day per set) ----------------------
+// ---------------------- Best score (per-day per set) ----------------------
 function bestKey(k: string) { return `minuteMult.best.${todayStr()}.${k || "none"}`; }
 function useBestForKey(k: string): [number, (score: number) => boolean] {
   const [best, setBest] = useState<number>(() => Number(localStorage.getItem(bestKey(k)) || 0));
@@ -171,16 +171,19 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-// ---------------------- Frogger 2.5D (spaced cars, variable speeds) -------
+// ---------------------- Frogger 2.5D (spaced cars, never mid-lane spawn) --
 function FroggerGame({ onClose }: { onClose?: () => void }) {
   const COLS = 17;
   const ROWS = 16; // goal at 0, lanes 2..13
   const CELL = 40;
+
   const LANE_ROWS = Array.from({ length: 12 }, (_, i) => i + 2); // [2..13]
   const DIRS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 1 : -1));
+  // Top lanes faster
   const SPEEDS = LANE_ROWS.map((_, i) => { const rank = (LANE_ROWS.length - i) / LANE_ROWS.length; return 2.0 + rank * 2.0; });
   const LANE_COUNTS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 4 : 3));
-  const LANE_SPACING = LANE_ROWS.map((_, i) => (COLS / (LANE_COUNTS[i] as number)) * 1.9);
+  const LANE_SPACING = LANE_ROWS.map((_, i) => (COLS / (LANE_COUNTS[i] as number)) * 2.4); // easier: even more space
+  const MIN_SPAWN_OFFSET = 2; // spawn at least this far off-screen
 
   const [frog, setFrog] = useState<Frog>({ r: ROWS - 1, c: Math.floor(COLS / 2), hopping: false });
   const targetRef = useRef<Frog>({ r: ROWS - 1, c: Math.floor(COLS / 2), hopping: false });
@@ -188,6 +191,7 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
   const [won, setWon] = useState(false);
   const [, setFrame] = useState(0);
 
+  // Touch controls
   const touchStartRef = useRef<{x:number;y:number}|null>(null);
   function queueHop(dr: number, dc: number) {
     const next: Frog = { r: frog.r + dr, c: frog.c + dc, hopping: true };
@@ -197,15 +201,17 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
     setFrog((f) => ({ ...f, hopping: true }));
   }
 
-  // Cars: start off-screen at lane ends
+  // Cars: strict off-screen spawn and recycling relative to lane neighbors
   const carsRef = useRef<Car[][]>(
     LANE_ROWS.map((row, i) => {
       const count = LANE_COUNTS[i] as number;
       const dir = DIRS[i]!;
       const spacing = LANE_SPACING[i]!;
+      // Base is just off the edge; we place the fleet trailing/leading off-screen
+      const base = dir === 1 ? -MIN_SPAWN_OFFSET : COLS + MIN_SPAWN_OFFSET;
       return Array.from({ length: count }, (_, k) => {
-        const offset = k * spacing + Math.random() * spacing * 0.5;
-        const startX = dir === 1 ? -(offset + 1.5) : COLS + offset + 1.5; // off-screen
+        const offset = k * spacing;
+        const startX = dir === 1 ? base - offset - 2 : base + offset + 2; // ensure fully off-screen in correct order
         return ({
           row,
           x: startX,
@@ -237,15 +243,25 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
   useRaf((dt) => {
     if (!alive || won) return;
 
-    // Move cars; wrap off-screen with randomized gaps
-    carsRef.current.forEach((lane) => {
+    // Move cars; recycle strictly based on neighbor positions to preserve spacing
+    carsRef.current.forEach((lane, laneIdx) => {
+      const spacing = LANE_SPACING[laneIdx]!;
+      const dir = DIRS[laneIdx]!;
+      // Advance
+      lane.forEach((car) => { car.x += car.dir * car.speed * dt; });
+      // Compute lane extremes
+      let minX = Infinity, maxX = -Infinity;
+      lane.forEach((car) => { if (car.x < minX) minX = car.x; if (car.x > maxX) maxX = car.x; });
+      // Recycle off-screen cars
       lane.forEach((car) => {
-        car.x += car.dir * car.speed * dt;
-        const spacing = LANE_SPACING[LANE_ROWS.indexOf(car.row)]!;
-        if (car.dir === 1 && car.x > COLS + car.w + 1) {
-          car.x = -car.w - (Math.random() * spacing);
-        } else if (car.dir === -1 && car.x < -car.w - 1) {
-          car.x = COLS + (Math.random() * spacing);
+        if (dir === 1 && car.x > COLS + car.w + MIN_SPAWN_OFFSET) {
+          const jitter = Math.random() * 0.3 * spacing;
+          car.x = minX - spacing - jitter; // place behind left-most car off-screen
+          if (car.x > -MIN_SPAWN_OFFSET) car.x = -MIN_SPAWN_OFFSET - spacing - jitter;
+        } else if (dir === -1 && car.x < -car.w - MIN_SPAWN_OFFSET) {
+          const jitter = Math.random() * 0.3 * spacing;
+          car.x = maxX + spacing + jitter; // place ahead of right-most car off-screen
+          if (car.x < COLS + MIN_SPAWN_OFFSET) car.x = COLS + MIN_SPAWN_OFFSET + spacing + jitter;
         }
       });
     });
@@ -271,9 +287,8 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
     if (inLaneIdx >= 0) {
       const cars = carsRef.current[inLaneIdx]!;
       const hit = cars.some((car) => {
-        const cx = car.x;
-        const fx = fc;
-        return cx <= fx && fx <= cx + car.w && cx >= -car.w && cx <= COLS + car.w; // on-screen range
+        const cx = car.x; const fx = fc;
+        return cx <= fx && fx <= cx + car.w && cx >= -car.w && cx <= COLS + car.w; // visible range
       });
       if (hit) setAlive(false);
     }
@@ -327,26 +342,45 @@ function FroggerGame({ onClose }: { onClose?: () => void }) {
           <div className="absolute left-0 right-0" style={{ top: CELL, height: CELL, background: "linear-gradient(180deg,#fde68a,#fbbf24)", opacity: 0.6 }} />
           <div className="absolute left-0 right-0" style={{ bottom: 0, height: CELL, background: "linear-gradient(180deg,#86efac,#22c55e)" }} />
 
-          {/* Cars */}
+          {/* Cars — improved visuals */}
           {carsRef.current.flat().map((car, idx) => (
             <div key={idx} className="absolute will-change-transform" style={{ top: car.row * CELL + 2, transform: `translateX(${car.x * CELL}px)`, transition: "transform 0.05s linear" }}>
               <div className="relative" style={{ width: car.w * CELL, height: CELL - 4 }}>
+                {/* body */}
                 <div className="absolute inset-0 rounded-xl shadow-md" style={{ background: `linear-gradient(180deg,hsl(${car.hue} 80% 65%), hsl(${car.hue} 80% 40%))` }} />
-                <div className="absolute left-1 right-1 top-1 h-1.5 rounded bg-white/70" />
-                <div className="absolute left-1 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-black/70" />
-                <div className="absolute right-1 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-black/70" />
+                {/* roof */}
+                <div className="absolute left-[15%] right-[15%] top-1 h-3 rounded-md bg-white/70" />
+                {/* windshield */}
+                <div className="absolute left-2 right-2 top-2 h-2 rounded bg-white/50" />
+                {/* wheels */}
+                <div className="absolute left-1 bottom-0.5 w-3 h-3 rounded-full bg-black/80" />
+                <div className="absolute right-1 bottom-0.5 w-3 h-3 rounded-full bg-black/80" />
+                {/* shadow */}
                 <div className="absolute -bottom-1 left-2 right-2 h-1 rounded-full bg-black/20 blur-sm" />
               </div>
             </div>
           ))}
 
-          {/* Frog */}
+          {/* Frog — cuter sprite */}
           <div className="absolute" style={{ top: frogPos.top, left: frogPos.left }}>
             <div className="relative" style={{ width: CELL, height: CELL }}>
-              <div className="absolute inset-0 rounded-full shadow" style={{ background: "radial-gradient(circle at 30% 30%, #a7f3d0, #10b981)" }} />
+              {/* body */}
+              <div className="absolute inset-0 rounded-full shadow" style={{ background: "radial-gradient(circle at 40% 35%, #b7f7cf, #10b981)" }} />
+              {/* belly */}
+              <div className="absolute left-1/2 -translate-x-1/2 bottom-2 w-6 h-6 rounded-full bg-emerald-200/90" />
+              {/* eyes */}
+              <div className="absolute left-2 top-1 w-4 h-4 rounded-full bg-white" />
+              <div className="absolute right-2 top-1 w-4 h-4 rounded-full bg-white" />
+              <div className="absolute left-3 top-2 w-2 h-2 rounded-full bg-emerald-900" />
+              <div className="absolute right-3 top-2 w-2 h-2 rounded-full bg-emerald-900" />
+              {/* cheeks */}
+              <div className="absolute left-2.5 bottom-4 w-2 h-2 rounded-full bg-rose-300/70" />
+              <div className="absolute right-2.5 bottom-4 w-2 h-2 rounded-full bg-rose-300/70" />
+              {/* legs */}
+              <div className="absolute left-1 bottom-1 w-3 h-3 rounded-full bg-emerald-700/80" />
+              <div className="absolute right-1 bottom-1 w-3 h-3 rounded-full bg-emerald-700/80" />
+              {/* ground shadow */}
               <div className="absolute left-1/2 -translate-x-1/2 -bottom-1 w-16 h-3 rounded-full bg-black/20 blur-sm" />
-              <div className="absolute left-1/4 top-3 w-3 h-3 rounded-full bg-emerald-900" />
-              <div className="absolute right-1/4 top-3 w-3 h-3 rounded-full bg-emerald-900" />
             </div>
           </div>
 
@@ -387,7 +421,7 @@ export default function MinuteMultiplicationApp() {
   const [showEndModal, setShowEndModal] = useState<boolean>(false);
   const [wrongStreak, setWrongStreak] = useState<number>(0);
 
-  // Missed‑fact handling between rounds
+  // Missed-fact handling between rounds
   const [missedQueueUI, setMissedQueueUI] = useState<Problem[]>([]);
   const missedQueueRef = useRef<Problem[]>([]);
   const setMissedQueue = (arr: Problem[]) => { missedQueueRef.current = Array.isArray(arr) ? arr.slice() : []; setMissedQueueUI(missedQueueRef.current.slice()); };
@@ -436,7 +470,6 @@ export default function MinuteMultiplicationApp() {
     setFlash(null);
     setWrongStreak(0);
     setShowEndModal(false);
-    // Focus answer immediately
     setTimeout(() => answerRef.current?.focus(), 0);
   }
 
@@ -634,7 +667,7 @@ export default function MinuteMultiplicationApp() {
                 <div className="text-sm text-indigo-900/90">Correct: {lastResult.stats.correct} • Wrong attempts: {lastResult.stats.wrong}</div>
                 {lastResult.stats.missed.length > 0 ? (
                   <div className="text-sm text-rose-700">
-                    Missed facts to review (auto‑included next round):
+                    Missed facts to review (auto-included next round):
                     {lastResult.stats.missed.map(m => (
                       <span key={`${m.a}-${m.b}`} className="mx-1 text-lg font-extrabold text-rose-700"> {m.a}×{m.b} </span>
                     ))}
@@ -678,11 +711,9 @@ function runDevTests() {
   try {
     console.group("Minute Multiplication — sanity tests");
 
-    // selectionKey sorts & joins
     console.assert(selectionKey([3,1,2]) === "1,2,3", "selectionKey should sort ascending");
     console.assert(selectionKey([]) === "", "selectionKey empty set");
 
-    // genRandomProblem respects families and 1..12 multipliers
     for (let i = 0; i < 10; i++) {
       const p = genRandomProblem([2,7]);
       console.assert([2,7].includes(p.a), "a must be from selected families");
@@ -690,7 +721,6 @@ function runDevTests() {
       console.assert(p.ans === p.a * p.b, "ans must equal a*b");
     }
 
-    // buildStats counts and de-duplicates misses
     const stats = buildStats([
       { a: 2, b: 3, ans: 6, resp: 6, correct: true },
       { a: 2, b: 4, ans: 8, resp: 9, correct: false },
@@ -701,15 +731,12 @@ function runDevTests() {
     console.assert(stats.wrong === 3, "wrong count");
     console.assert(stats.missed.length === 2, "unique missed facts");
 
-    // bestKey contains date + set key
     const k = "2,7"; const bk = bestKey(k);
     console.assert(bk.includes(todayStr()) && bk.includes(k), "bestKey structure");
 
-    // clampInt boundaries
     console.assert(clampInt("100", 10, 90) === 90, "clamp upper bound");
     console.assert(clampInt("-5", 0, 60) === 0, "clamp lower bound");
 
-    // todayStr format
     console.assert(/^\d{4}-\d{2}-\d{2}$/.test(todayStr()), "todayStr format YYYY-MM-DD");
 
     console.groupEnd();
