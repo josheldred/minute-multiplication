@@ -4,13 +4,15 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  * Minute Multiplication — Kid Mode (3rd Grade)
  * Fully self‑contained React + TypeScript app.
  *
- * Fixes in this revision:
- * - Hides answers in the bottom summary panel (prevents peeking during play).
- * - Fixes mismatched parenthesis in Frogger `carsRef` initialization (build error).
- * - Cars in Frogger spawn off‑screen at lane ends; wider spacing for easier play.
- * - Keeps all prior features: wrong‑twice skip/−1, end modal, confetti, sounds,
- *   Frogger with close button, varied lane speeds, input focus, smaller placeholder,
- *   and best‑score per day/set.
+ * This file restores the missing `useBestForKey` hook and includes all recent
+ * gameplay & UX updates:
+ * - Selectable fact families **1–12** (×0 removed)
+ * - 60s (configurable) timed rounds; input auto‑focus; small placeholder
+ * - Wrong twice in a row ⇒ auto‑skip & **−1 point** (non‑negative)
+ * - Bottom summary hides answers; end‑of‑round modal shows answers
+ * - Per‑day best score per selected set; intense confetti & bonus Frogger
+ * - Frogger: wider spacing, off‑screen spawn, constant motion, **swipe on touch**
+ * - Seconds input allows free typing; clamps on blur/Enter (10–300)
  */
 
 // ---------------------- Types ---------------------------------------------
@@ -31,9 +33,192 @@ function clampInt(v: string | number, min: number, max: number): number { const 
 // Problem generator (module-scope so tests can call it)
 function genRandomProblem(families: number[]): Problem { const a = choice(families); const b = choice(MULTIPLIERS); return { a, b, ans: a * b }; }
 
+// ---------------------- Best score (per‑day per set) ----------------------
+function bestKey(k: string) { return `minuteMult.best.${todayStr()}.${k || "none"}`; }
+function useBestForKey(k: string): [number, (score: number) => boolean] {
+  const [best, setBest] = useState<number>(() => Number(localStorage.getItem(bestKey(k)) || 0));
+  useEffect(() => { setBest(Number(localStorage.getItem(bestKey(k)) || 0)); }, [k]);
+  const update = (score: number) => {
+    const cur = Number(localStorage.getItem(bestKey(k)) || 0);
+    if (score > cur) { localStorage.setItem(bestKey(k), String(score)); setBest(score); return true; }
+    return false;
+  };
+  return [best, update];
+}
+
 // ---------------------- Hooks ---------------------------------------------
 function useInterval(callback: () => void, delay: number | null) {
   const savedRef = useRef(callback);
+  useEffect(() => { savedRef.current = callback; }, [callback]);
+  useEffect(() => {
+    if (delay == null) return;
+    const id = setInterval(() => savedRef.current(), delay);
+    return () => clearInterval(id);
+  }, [delay]);
+}
+
+function useRaf(callback: (dt: number) => void, active: boolean) {
+  const cbRef = useRef(callback);
+  const frameRef = useRef<number | null>(null);
+  useEffect(() => { cbRef.current = callback; }, [callback]);
+  useEffect(() => {
+    if (!active) return;
+    let prev = performance.now();
+    const loop = (now: number) => {
+      const dt = (now - prev) / 1000; // seconds
+      prev = now;
+      cbRef.current?.(dt);
+      frameRef.current = requestAnimationFrame(loop);
+    };
+    frameRef.current = requestAnimationFrame(loop);
+    return () => { if (frameRef.current != null) cancelAnimationFrame(frameRef.current); };
+  }, [active]);
+}
+
+// ---------------------- Tiny Sound Synth ----------------------------------
+let _audioCtx: AudioContext | undefined;
+function getCtx(): AudioContext {
+  if (!_audioCtx) {
+    const AC: any = (window as any).AudioContext || (window as any).webkitAudioContext;
+    _audioCtx = new AC();
+  }
+  return _audioCtx!;
+}
+function beep({ freq = 600, dur = 0.12, type = "sine", gain = 0.05 }: { freq?: number; dur?: number; type?: OscillatorType; gain?: number }) {
+  try {
+    const ctx = getCtx();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type; o.frequency.value = freq; g.gain.value = gain;
+    o.connect(g); g.connect(ctx.destination);
+    const t = ctx.currentTime; o.start(t); o.stop(t + dur);
+  } catch {}
+}
+function chordSuccess() { beep({ freq: 660, dur: 0.08, type: "triangle" }); setTimeout(() => beep({ freq: 880, dur: 0.08, type: "triangle" }), 90); }
+function buzzWrong() { beep({ freq: 180, dur: 0.12, type: "square", gain: 0.04 }); }
+function fanfareNewBest() { [660, 880, 1320].forEach((f, i) => setTimeout(() => beep({ freq: f, dur: 0.1, type: "sawtooth" }), i * 90)); }
+
+// ---------------------- Confetti (intense) --------------------------------
+function Confetti({ show }: { show: boolean }) {
+  if (!show) return null;
+  const N = 200; // many pieces
+  const palette = ["#f59e0b", "#10b981", "#6366f1", "#ef4444", "#06b6d4", "#f472b6", "#84cc16"];
+  const emoji = ['🎉','✨','⭐️','💥','🎈','🟡','🟣','🟠'];
+  const pieces = Array.from({ length: N }, (_, i) => ({
+    id: i,
+    left: Math.random() * 100,
+    delay: Math.random() * 0.6,
+    dur: 1.4 + Math.random() * 1.2,
+    size: 8 + Math.floor(Math.random() * 16),
+    type: Math.random() < 0.6 ? 'shape' : 'emoji' as const,
+    color: choice(palette),
+    char: choice(emoji),
+  }));
+  return (
+    <div className="pointer-events-none fixed inset-0 overflow-hidden z-50">
+      {pieces.map((p) => (
+        p.type === 'emoji' ? (
+          <span
+            key={p.id}
+            className="absolute animate-confetti"
+            style={{ left: `${p.left}%`, fontSize: `${p.size}px`, animationDuration: `${p.dur}s`, animationDelay: `${p.delay}s` }}
+          >{p.char}</span>
+        ) : (
+          <div
+            key={p.id}
+            className="absolute animate-confetti rounded-md shadow"
+            style={{ left: `${p.left}%`, width: `${p.size}px`, height: `${p.size}px`, background: p.color, animationDuration: `${p.dur}s`, animationDelay: `${p.delay}s` }}
+          />
+        )
+      ))}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="w-16 h-16 rounded-full border-4 border-fuchsia-400/70 animate-ring" />
+      </div>
+      <style>{`
+        @keyframes confettiFall { 0% { transform: translate3d(0, -10vh, 0) rotate(0deg); opacity: 1; } 100% { transform: translate3d(0, 110vh, 0) rotate(720deg); opacity: 0; } }
+        .animate-confetti { animation: confettiFall var(--dur,1.6s) ease-out forwards; }
+        @keyframes ring { 0% { transform: scale(0.2); opacity: 0.9; } 100% { transform: scale(2.2); opacity: 0; } }
+        .animate-ring { animation: ring 0.9s ease-out forwards; }
+      `}</style>
+    </div>
+  );
+}
+
+// ---------------------- UI Elements ---------------------------------------
+function Toggle({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        `px-3 py-2 rounded-2xl border text-sm sm:text-base font-bold transition select-none shadow-sm ` +
+        (active
+          ? "bg-gradient-to-br from-emerald-400 to-emerald-600 text-white border-emerald-600 shadow-lg"
+          : "bg-white text-indigo-900 border-indigo-200 hover:border-indigo-400 hover:bg-indigo-50")
+      }
+      aria-pressed={active}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className={"flex flex-col items-center p-3 rounded-2xl bg-white/90 shadow-md border"}>
+      <div className="text-3xl font-black tabular-nums">{value}</div>
+      <div className="text-xs text-gray-600 uppercase tracking-wide">{label}</div>
+    </div>
+  );
+}
+
+// ---------------------- Frogger 2.5D (spaced cars, variable speeds) -------
+function FroggerGame({ onClose }: { onClose?: () => void }) {
+  const COLS = 17;
+  const ROWS = 16; // goal at 0, lanes 2..13
+  const CELL = 40;
+  const LANE_ROWS = Array.from({ length: 12 }, (_, i) => i + 2); // [2..13]
+  const DIRS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 1 : -1));
+  const SPEEDS = LANE_ROWS.map((_, i) => { const rank = (LANE_ROWS.length - i) / LANE_ROWS.length; return 2.0 + rank * 2.0; });
+  const LANE_COUNTS = LANE_ROWS.map((_, i) => (i % 2 === 0 ? 4 : 3));
+  const LANE_SPACING = LANE_ROWS.map((_, i) => (COLS / (LANE_COUNTS[i] as number)) * 1.9);
+
+  const [frog, setFrog] = useState<Frog>({ r: ROWS - 1, c: Math.floor(COLS / 2), hopping: false });
+  const targetRef = useRef<Frog>({ r: ROWS - 1, c: Math.floor(COLS / 2), hopping: false });
+  const [alive, setAlive] = useState(true);
+  const [won, setWon] = useState(false);
+  const [, setFrame] = useState(0);
+
+  const touchStartRef = useRef<{x:number;y:number}|null>(null);
+  function queueHop(dr: number, dc: number) {
+    const next: Frog = { r: frog.r + dr, c: frog.c + dc, hopping: true };
+    next.r = Math.max(0, Math.min(ROWS - 1, next.r));
+    next.c = Math.max(0, Math.min(COLS - 1, next.c));
+    targetRef.current = next;
+    setFrog((f) => ({ ...f, hopping: true }));
+  }
+
+  // Cars: start off-screen at lane ends
+  const carsRef = useRef<Car[][]>(
+    LANE_ROWS.map((row, i) => {
+      const count = LANE_COUNTS[i] as number;
+      const dir = DIRS[i]!;
+      const spacing = LANE_SPACING[i]!;
+      return Array.from({ length: count }, (_, k) => {
+        const offset = k * spacing + Math.random() * spacing * 0.5;
+        const startX = dir === 1 ? -(offset + 1.5) : COLS + offset + 1.5; // off-screen
+        return ({
+          row,
+          x: startX,
+          w: 1.6 + (k % 2) * 0.6,
+          speed: SPEEDS[i]! * (0.9 + Math.random() * 0.2),
+          dir,
+          hue: 200 + ((i * 25 + k * 40) % 160),
+        });
+      });
+    })
+  );
+
+  // Keyboard
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const { key } = e;
@@ -51,6 +236,7 @@ function useInterval(callback: () => void, delay: number | null) {
   const hopProg = useRef(0);
   useRaf((dt) => {
     if (!alive || won) return;
+
     // Move cars; wrap off-screen with randomized gaps
     carsRef.current.forEach((lane) => {
       lane.forEach((car) => {
@@ -74,6 +260,8 @@ function useInterval(callback: () => void, delay: number | null) {
         setFrog((f) => ({ ...f }));
       }
     }
+
+    // Re-render
     setFrame((n) => (n + 1) % 1000000);
 
     // Collision + win
@@ -85,8 +273,7 @@ function useInterval(callback: () => void, delay: number | null) {
       const hit = cars.some((car) => {
         const cx = car.x;
         const fx = fc;
-        // Only collide when car is on-screen
-        return cx <= fx && fx <= cx + car.w && cx >= -car.w && cx <= COLS + car.w;
+        return cx <= fx && fx <= cx + car.w && cx >= -car.w && cx <= COLS + car.w; // on-screen range
       });
       if (hit) setAlive(false);
     }
@@ -119,11 +306,7 @@ function useInterval(callback: () => void, delay: number | null) {
             const ax = Math.abs(dx), ay = Math.abs(dy);
             const TH = 24; // px threshold
             if (ax < TH && ay < TH) return;
-            if (ax > ay) {
-              queueHop(0, dx > 0 ? 1 : -1);
-            } else {
-              queueHop(dy > 0 ? 1 : -1, 0);
-            }
+            if (ax > ay) { queueHop(0, dx > 0 ? 1 : -1); } else { queueHop(dy > 0 ? 1 : -1, 0); }
             touchStartRef.current = null;
           }}
         >
@@ -181,7 +364,6 @@ export default function MinuteMultiplicationApp() {
   const [selected, setSelected] = useState<number[]>([2, 3]);
   const [seconds, setSeconds] = useState<number>(60);
   const [timeLeft, setTimeLeft] = useState<number>(60);
-  // Allow free typing in the Seconds box; clamp only on commit (blur/Enter)
   const [secondsInput, setSecondsInput] = useState<string>("60");
   useEffect(() => { setSecondsInput(String(seconds)); }, [seconds]);
   function commitSeconds(raw: string) {
@@ -193,6 +375,7 @@ export default function MinuteMultiplicationApp() {
     setSeconds(n);
     setSecondsInput(String(n));
   }
+
   const [running, setRunning] = useState<boolean>(false);
   const [score, setScore] = useState<number>(0);
   const [current, setCurrent] = useState<Problem>(() => genRandomProblem([2, 3]));
@@ -204,6 +387,7 @@ export default function MinuteMultiplicationApp() {
   const [showEndModal, setShowEndModal] = useState<boolean>(false);
   const [wrongStreak, setWrongStreak] = useState<number>(0);
 
+  // Missed‑fact handling between rounds
   const [missedQueueUI, setMissedQueueUI] = useState<Problem[]>([]);
   const missedQueueRef = useRef<Problem[]>([]);
   const setMissedQueue = (arr: Problem[]) => { missedQueueRef.current = Array.isArray(arr) ? arr.slice() : []; setMissedQueueUI(missedQueueRef.current.slice()); };
@@ -211,6 +395,7 @@ export default function MinuteMultiplicationApp() {
   const key = useMemo(() => selectionKey(selected), [selected]);
   const [best, updateBest] = useBestForKey(key);
 
+  // Refs for focus control
   const answerRef = useRef<HTMLInputElement | null>(null);
 
   useInterval(() => {
@@ -221,6 +406,7 @@ export default function MinuteMultiplicationApp() {
     });
   }, running ? 1000 : null);
 
+  // Always focus the answer field when a round is running and the problem changes
   useEffect(() => { if (running && answerRef.current) answerRef.current.focus(); }, [running, current]);
 
   function genNextProblem(): Problem {
@@ -250,6 +436,7 @@ export default function MinuteMultiplicationApp() {
     setFlash(null);
     setWrongStreak(0);
     setShowEndModal(false);
+    // Focus answer immediately
     setTimeout(() => answerRef.current?.focus(), 0);
   }
 
@@ -334,7 +521,6 @@ export default function MinuteMultiplicationApp() {
               pattern="[0-9]*"
               value={secondsInput}
               onChange={(e) => {
-                // Let the user type freely (including deleting to empty)
                 const next = e.target.value.replace(/[^0-9]/g, "");
                 if (next.length <= 3) setSecondsInput(next);
               }}
@@ -465,7 +651,7 @@ export default function MinuteMultiplicationApp() {
           </div>
         )}
 
-        <footer className="mt-10 text-xs text-indigo-800/80"><p>Parents: choose any mix (including ×0 and ×1). Problems always use multipliers 1–12. Timer is adjustable.</p></footer>
+        <footer className="mt-10 text-xs text-indigo-800/80"><p>Parents: choose any mix (1–12). Problems always use multipliers 1–12. Timer is adjustable.</p></footer>
       </div>
 
       {/* CSS helpers */}
