@@ -20,7 +20,7 @@ type Frog = { r: number; c: number; hopping: boolean };
 type Car = { row: number; x: number; w: number; speed: number; dir: number; hue: number };
 
 // ---------------------- Constants & helpers -------------------------------
-const ALL_FAMILIES = Array.from({ length: 13 }, (_, i) => i); // 0..12
+const ALL_FAMILIES = Array.from({ length: 12 }, (_, i) => i + 1); // 1..12
 const MULTIPLIERS = Array.from({ length: 12 }, (_, i) => i + 1); // 1..12
 
 function choice<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]!; }
@@ -342,6 +342,18 @@ export default function MinuteMultiplicationApp() {
   const [selected, setSelected] = useState<number[]>([2, 3]);
   const [seconds, setSeconds] = useState<number>(60);
   const [timeLeft, setTimeLeft] = useState<number>(60);
+  // Allow free typing in the Seconds box; clamp only on commit (blur/Enter)
+  const [secondsInput, setSecondsInput] = useState<string>("60");
+  useEffect(() => { setSecondsInput(String(seconds)); }, [seconds]);
+  function commitSeconds(raw: string) {
+    const cleaned = raw.replace(/[^0-9]/g, "");
+    if (cleaned === "") { setSecondsInput(String(seconds)); return; }
+    let n = Math.round(Number(cleaned));
+    if (!Number.isFinite(n)) { setSecondsInput(String(seconds)); return; }
+    n = Math.max(10, Math.min(300, n));
+    setSeconds(n);
+    setSecondsInput(String(n));
+  }
   const [running, setRunning] = useState<boolean>(false);
   const [score, setScore] = useState<number>(0);
   const [current, setCurrent] = useState<Problem>(() => genRandomProblem([2, 3]));
@@ -476,7 +488,21 @@ export default function MinuteMultiplicationApp() {
           <h1 className="text-3xl sm:text-4xl font-black bg-gradient-to-r from-fuchsia-600 to-indigo-600 bg-clip-text text-transparent flex items-center gap-2">✨ Minute Multiplication</h1>
           <div className="flex items-center gap-2">
             <label className="text-sm text-indigo-700 font-semibold" htmlFor="seconds">Seconds</label>
-            <input id="seconds" type="number" min={10} max={300} value={seconds} onChange={(e) => setSeconds(clampInt(e.target.value, 10, 300))} className="w-20 rounded-xl border border-indigo-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500" />
+            <input
+              id="seconds"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={secondsInput}
+              onChange={(e) => {
+                // Let the user type freely (including deleting to empty)
+                const next = e.target.value.replace(/[^0-9]/g, "");
+                if (next.length <= 3) setSecondsInput(next);
+              }}
+              onBlur={() => commitSeconds(secondsInput)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitSeconds(secondsInput); } }}
+              className="w-20 rounded-xl border border-indigo-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500"
+            />
             <button onClick={() => setTimeLeft(seconds)} className="text-sm underline text-indigo-700 hover:text-indigo-900" disabled={running} title="Sync timer with Seconds">Reset</button>
           </div>
         </header>
@@ -484,7 +510,7 @@ export default function MinuteMultiplicationApp() {
         {/* Fact family selection */}
         <section className="mb-6">
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="font-extrabold text-indigo-900">Pick your fact families (0–12)</h2>
+            <h2 className="font-extrabold text-indigo-900">Pick your fact families (1–12)</h2>
             <div className="flex gap-2 text-sm">
               <button onClick={selectAll} className="underline font-semibold text-indigo-800">Select all</button>
               <button onClick={clearAll} className="underline font-semibold text-indigo-800">Clear</button>
@@ -495,7 +521,7 @@ export default function MinuteMultiplicationApp() {
               <Toggle key={n} active={selected.includes(n)} onClick={() => toggleFamily(n)}>×{n}</Toggle>
             ))}
           </div>
-          <p className="mt-3 text-sm text-indigo-800/80">Tip: choose any mix like <span className="font-mono">×0–×3</span> or just <span className="font-mono">×7</span>.</p>
+          <p className="mt-3 text-sm text-indigo-800/80">Tip: choose any mix like <span className="font-mono">×1–×3</span> or just <span className="font-mono">×7</span>.</p>
         </section>
 
         {/* Status & Controls */}
